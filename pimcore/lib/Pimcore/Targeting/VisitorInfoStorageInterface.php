@@ -19,25 +19,11 @@ namespace Pimcore\Targeting;
 
 use Pimcore\Targeting\Model\VisitorInfo;
 
-class TargetingStorage implements TargetingStorageInterface
+interface VisitorInfoStorageInterface
 {
-    /**
-     * @var VisitorInfo
-     */
-    private $visitorInfo;
+    public function getVisitorInfo(): VisitorInfo;
 
-    public function getVisitorInfo(): VisitorInfo
-    {
-        return $this->visitorInfo;
-    }
+    public function setVisitorInfo(VisitorInfo $visitorInfo);
 
-    public function setVisitorInfo(VisitorInfo $visitorInfo)
-    {
-        $this->visitorInfo = $visitorInfo;
-    }
-
-    public function hasVisitorInfo(): bool
-    {
-        return null !== $this->visitorInfo;
-    }
+    public function hasVisitorInfo(): bool;
 }
