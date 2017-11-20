@@ -62,7 +62,7 @@ class OGone implements IPayment
      * @var string[] parameter list with allowed parameters for SHA - in generation
      */
     protected static $_SHA_IN_PARAMETERS = [
-        'ACCEPTURL',                       'ADDMATCH',          'ADDRMATCH',
+        'ACCEPTURL',                       'ADDMATCH',                         'ADDRMATCH',
         'ALIAS',                           'ALIASOPERATION',                   'ALIASUSAGE',
         'ALLOWCORRECTION',                 'AMOUNT',                           'AMOUNTHTVA',
         'AMOUNTTVA',                       'BACKURL',                          'BGCOLOR',
@@ -147,6 +147,43 @@ class OGone implements IPayment
             "TRXDATE",                  "VC"
     ];
 
+    /**
+     * The transaction was not completed, because it was interrupted or because of a validation error.
+     * In case of a validation error, usually an additional error code (*) (NCERROR) identifies the error.
+     */
+    const TX_STATE_INVALID = 'invalid';
+    /**
+     * The transaction was cancelled by the customer/buyer
+     */
+    const TX_STATE_CANCELLED = 'cancelled';
+    /**
+     * The acquirer did not authorise the payment
+     */
+    const TX_STATE_REFUSED = 'refused';
+    const TX_STATE_STORED = 'stored';
+    /**
+     * The acquirer authorised the payment. You should confirm these transactions to complete the payment, or delete the authorisation if you wish to cancel the order.
+     */
+    const TX_STATE_AUTHORIZED = 'authorized';
+    const TX_STATE_AUTHORIZED_CANCELLED = 'authorized_cancelled';
+    const TX_STATE_DELETED = 'deleted';
+    const TX_STATE_REFUND = 'refund';
+    /**
+     * The payment was captured. Usually, with this status, you may expect the money on your account.
+     */
+    const TX_STATE_REQUESTED = 'requested';
+
+    protected static $_TX_STATES = [
+        0 => self::TX_STATE_INVALID,
+        1 => self::TX_STATE_CANCELLED,
+        2 => self::TX_STATE_REFUSED,
+        4 => self::TX_STATE_STORED,
+        5 => self::TX_STATE_AUTHORIZED,
+        6 => self::TX_STATE_AUTHORIZED_CANCELLED,
+        7 => self::TX_STATE_DELETED,
+        8 => self::TX_STATE_REFUND,
+        9 => self::TX_STATE_REQUESTED
+    ];
 
 
     public function __construct(array $options, FormFactoryInterface $formFactory)
@@ -238,7 +275,42 @@ class OGone implements IPayment
         $oGonePaymentId = $response['PAYID'];
         $ip             = $response['IP'];
         $orderId        = $response['orderID'];
-        $state          = $response['state']; //success,
+        $state          = $response['state']; //success, etc. based on type of URL response
+        
+        //@see https://payment-services.ingenico.com/int/en/ogone/support/guides/user%20guides/statuses-and-errors/statuses
+        $ogoneState = $this->parseOgoneTransactionStatus($response['status']);
+        $ogoneBasedState = !empty($orderId) && $state === 'success' ? IStatus::STATUS_AUTHORIZED : IStatus::STATUS_CANCELLED;
+        $paymentMessage = "";
+        if( $ogoneState !== null ) {
+            switch( $ogoneState->state ) {
+                case self::TX_STATE_AUTHORIZED:
+                case self::TX_STATE_STORED:
+                case self::TX_STATE_REQUESTED:
+                    // captured
+                    $ogoneBasedState = IStatus::STATUS_AUTHORIZED;
+                    break;
+                case self::TX_STATE_CANCELLED:
+                    // cancelled by customer
+                    $ogoneBasedState = IStatus::STATUS_CANCELLED;
+                    break;
+                case self::TX_STATE_INVALID:
+                case self::TX_STATE_REFUSED:
+                    // error -> not: another state should be used "failed"
+                    $ogoneBasedState = IStatus::STATUS_CANCELLED;
+                    break;
+                // ignore other states
+            }
+
+            // isAbnormalOrIntermediary
+            if( $ogoneState->secondaryCode !== null ) {
+                // Statuses with two digits represent either ‘intermediary' situations or abnormal events.
+                $paymentMessage = sprintf(
+                    'WARN: Retrieved ambiguous state (primary=%d, secondary=%d) for transaction %s using %s (%s)',
+                    $ogoneState->primaryCode, $ogoneState->secondaryCode,
+                    $transactionId, $ogoneState->state, $stateOgone)
+                );
+            }
+        }
 
         // restore price object for payment status
         $price = new Price(Decimal::create($amount), new Currency($currency));
@@ -256,8 +328,8 @@ class OGone implements IPayment
         $responseStatus = new Status(
             $orderId, //internal Payment ID
             $orderId, //paymentReference
-            "",
-            !empty($orderId) && $state === 'success' ? IStatus::STATUS_AUTHORIZED : IStatus::STATUS_CANCELLED,
+            $paymentMessage,
+            $ogoneBasedState,           
             [
                 'ogone_amount'          => (string)$price,
                 'ogone_paymentId'       => $oGonePaymentId,
@@ -406,7 +478,35 @@ class OGone implements IPayment
     {
         throw new NotImplementedException("executeCredit is not implemented yet.");
     }
+    
+    /**
+     * @param int|string $transactionState
+     * @return \stdClass|null
+     */
+    protected function parseOgoneTransactionStatus( $transactionState ) {
+        if(is_int($transactionState) || (is_string($transactionState) && ctype_digit($transactionState))) {
+            $txState = (int)$transactionState;
 
+            $primaryStateCode = null;
+            $secondaryStateCode = null;
+            if( $txState < 10 ) {
+                // Statuses with one digit are the most common statuses.
+                $primaryStateCode = $txState;
+            } else {
+                // Statuses with two digits represent either ‘intermediary' situations or abnormal events. When the second digit is:
+                $primaryStateCode = $txState/10;
+                $secondaryStateCode = $txState%10;
+            }
+            return (object)[
+                'state' => isset(self::$_TX_STATES[$primaryStateCode]) ? self::$_TX_STATES[$primaryStateCode] : 'unknown',
+                'primaryCode' => $primaryStateCode,
+                'secondaryCode' => $secondaryStateCode
+            ];
+        } else {
+            return null;
+        }
+    }
+    
     /**
      * Get the data to be digested.
      *
