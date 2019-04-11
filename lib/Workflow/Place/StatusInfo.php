@@ -103,18 +103,19 @@ class StatusInfo
             }
         }
 
+        return $this->filterPlaces($places);
+    }
+
+    /**
+     * Multiple parallel workflows with the same places should not result in multiple status labels
+     * @param PlaceConfig[] $places
+     * @return PlaceConfig[]
+     */
+    protected function filterPlaces(array $places) : array {
         $uniquePlaces = [];
-
-        /**
-         * multiple parallel workflows with the same places should not result in multiple status labels
-         *
-         * @var PlaceConfig $place
-         */
         foreach ($places as $place) {
-            $uniqueLabel = $place->getLabel().'__'.$place->getPlace();
-            $uniquePlaces[$uniqueLabel] = $place;
+            $uniquePlaces[$place->getPlace()] = $place;
         }
-
         return array_values($uniquePlaces);
     }
 }
